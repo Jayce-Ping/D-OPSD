@@ -576,7 +576,7 @@ def main(args):
                         height=test_h,
                         width=test_w,
                         num_inference_steps=args.num_training_steps,
-                        guidance_scale=0.0 if args.num_training_steps < 10 else 4.0,
+                        guidance_scale=1.0,
                         generator=generators,
                         output_type="pt",
                     )[0]
@@ -827,7 +827,7 @@ def main(args):
                                     height=test_h,
                                     width=test_w,
                                     num_inference_steps=args.num_training_steps,
-                                    guidance_scale=0.0 if args.num_training_steps < 10 else 4.0,
+                                    guidance_scale=1.0,
                                     generator=student_generators,
                                     output_type="pt",
                                 )[0]
@@ -846,7 +846,7 @@ def main(args):
                                     height=test_h,
                                     width=test_w,
                                     num_inference_steps=args.num_training_steps,
-                                    guidance_scale=0.0 if args.num_training_steps < 10 else 4.0,
+                                    guidance_scale=1.0,
                                     generator=teacher_generators,
                                     output_type="pt",
                                 )[0]

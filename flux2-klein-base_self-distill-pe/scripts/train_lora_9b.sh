@@ -15,13 +15,13 @@ accelerate launch \
     ${PYTHON_SCRIPT} \
     --deepspeed-config  "configs/z2.json" \
     --output-dir     "exp_results/" \
-    --exp-name     "dopsd_pe_teacher_ema1.0_4step_9b_geneval_bsz1_lora_lr2e-5" \
+    --exp-name     "dopsd_pe_teacher_ema1.0_40step_9b_geneval_bsz1_lora_lr2e-5" \
     --sample-steps      100 \
     --checkpoint-steps  500 \
     --epochs              3001 \
     --max-train-steps   3001 \
-    --pretrained_model   "black-forest-labs/FLUX.2-klein-9B" \
-    --num-training-steps  4 \
+    --pretrained_model   "black-forest-labs/FLUX.2-klein-base-9B" \
+    --num-training-steps  40 \
     --use-lora 2 \
     --lora-rank 64 \
     --lora-alpha 128 \

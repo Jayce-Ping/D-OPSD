@@ -63,9 +63,9 @@ bash scripts/train_lora_4b.sh     # FLUX.2-Klein-4B
 ```
 
 `--ema-decay 1.0` keeps the teacher frozen at the base model (cleanest: distill
-`base(p1)` → `student(p0)`); set `< 1.0` for an EMA teacher. Training runs in 4
-steps. Validation uses the same per-index noise for the p0 and p1 branches. The
-samples folder contains:
+`base(p1)` → `student(p0)`); set `< 1.0` for an EMA teacher. Training runs in 40
+steps with `guidance_scale=1.0`. Validation uses the same per-index noise for the
+p0 and p1 branches. The samples folder contains:
 
 - `samples_base_p0.png` — fixed base model on original prompts
 - `samples_base_p1.png` — fixed base model on enhanced prompts
@@ -87,7 +87,7 @@ from diffusers import Flux2KleinPipeline
 from peft import PeftModel
 
 pipe = Flux2KleinPipeline.from_pretrained(
-    "black-forest-labs/FLUX.2-klein-4B",
+    "black-forest-labs/FLUX.2-klein-base-4B",
     torch_dtype=torch.bfloat16,
 )
 pipe.to("cuda")
@@ -103,8 +103,8 @@ image = pipe(
     prompt="a photo of a black airplane and an orange apple",
     height=1024,
     width=1024,
-    num_inference_steps=4,
-    guidance_scale=0.0,
+    num_inference_steps=40,
+    guidance_scale=1.0,
     generator=torch.Generator("cuda").manual_seed(42),
 ).images[0]
 image.save("sample.png")
