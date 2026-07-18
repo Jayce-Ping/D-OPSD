@@ -1,7 +1,6 @@
 from torch.utils.data import Dataset
-import json
-from pathlib import Path
-from local_paths import resolve_existing_path
+
+from prompt_pair_data import read_validation_prompt_pairs
 
 
 class TextPromptDataset(Dataset):
@@ -11,21 +10,18 @@ class TextPromptDataset(Dataset):
     same jsonl row, so the student can be sampled on p0 and the teacher on p1.
     """
 
-    def __init__(self, dataset_path="a.jsonl", student_prompt_key="short_en",
-                 teacher_prompt_key="detailed_en", num_prompts=16,
-                 data_root: str | Path | None = None):
-        # only read the first num_prompts lines
-        self.data_root = Path(data_root).expanduser().resolve() if data_root is not None else Path(__file__).resolve().parent
-        self.dataset_path = resolve_existing_path(dataset_path, self.data_root)
-        with open(self.dataset_path, 'r') as f:
-            all_data = [json.loads(line.strip()) for line in f.readlines()]
-        self.student_prompts = []   # p0
-        self.teacher_prompts = []   # p1 = PE(p0)
-        for data in all_data:
-            self.student_prompts.append(str(data.get(student_prompt_key, "")))
-            self.teacher_prompts.append(str(data.get(teacher_prompt_key, "")))
-            if len(self.student_prompts) >= num_prompts:
-                break
+    def __init__(self, dataset_path="a.jsonl", student_prompt_key="p0",
+                 teacher_prompt_key="p1", num_prompts=16,
+                 data_root=None):
+        prompt_pairs = read_validation_prompt_pairs(
+            dataset_path,
+            student_prompt_key=student_prompt_key,
+            teacher_prompt_key=teacher_prompt_key,
+            num_prompts=num_prompts,
+            data_root=data_root,
+        )
+        self.student_prompts = [pair[0] for pair in prompt_pairs]
+        self.teacher_prompts = [pair[1] for pair in prompt_pairs]
 
     def __len__(self):
         return len(self.student_prompts)

@@ -1,13 +1,9 @@
-import json
 import random
 import torch
-import math
-from pathlib import Path
 from torch.utils.data import Dataset, DataLoader, Sampler
-from PIL import Image
-from typing import List, Tuple, Dict
-from torchvision.transforms import functional as F
-from local_paths import get_local_image_path, resolve_existing_path
+from typing import List, Tuple
+
+from prompt_pair_data import PromptPairRecords, collate_prompt_pairs
 
 # --- Utility functions ---
 def parse_ratios(ratio_strs: List[str]) -> List[Tuple[int, int]]:
@@ -44,112 +40,11 @@ def parse_prompt_key_pairs(spec: str) -> List[Tuple[str, str]]:
         raise ValueError(f"no valid prompt-key pairs parsed from {spec!r}")
     return pairs
 
-def has_transparency(img: Image.Image) -> bool:
-    if img.mode in ("RGBA", "LA"):
-        return True
-    if img.mode == "P" and "transparency" in img.info:
-        return True
-    return False
-
-def to_rgb_safely(img: Image.Image, bg=(255, 255, 255)) -> Image.Image:
-    if has_transparency(img):
-        img = img.convert("RGBA")
-        background = Image.new("RGB", img.size, bg)
-        background.paste(img, mask=img.getchannel("A"))
-        return background
-    return img.convert("RGB")
-
-
 # --- 1. Dataset ---
-class TextImageDataset(Dataset):
-    def __init__(self, jsonl_path: str, target_resolutions: List[Tuple[int, int]], data_root: str | Path | None = None):
-        self.data = []
-        self.data_root = Path(data_root).expanduser().resolve() if data_root is not None else Path(__file__).resolve().parent
-        self.jsonl_path = resolve_existing_path(jsonl_path, self.data_root)
-        with open(self.jsonl_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                self.data.append(json.loads(line))
+class PromptPairDataset(PromptPairRecords, Dataset):
+    """Torch Dataset wrapper around the pure prompt-pair record implementation."""
 
-        self.target_resolutions = target_resolutions
-        self.buckets: Dict[int, List[int]] = {i: [] for i in range(len(target_resolutions))}
-        self._build_buckets()
-
-    def _build_buckets(self):
-        for idx, item in enumerate(self.data):
-            if 'h*w' in item:
-                h_str, w_str = item['h*w'].split('*')
-            elif 'w*h' in item:
-                w_str, h_str = item['w*h'].split('*')
-            else:
-                raise KeyError("Item contains neither 'h*w' nor 'w*h'")
-            orig_h, orig_w = float(h_str), float(w_str)
-            orig_ratio = orig_w / orig_h
-            best_ratio_idx = 0
-            min_diff = float('inf')
-            for i, (tw, th) in enumerate(self.target_resolutions):
-                target_ratio = tw / th
-                diff = abs(math.log(orig_ratio) - math.log(target_ratio))
-                if diff < min_diff:
-                    min_diff = diff
-                    best_ratio_idx = i
-            self.buckets[best_ratio_idx].append(idx)
-
-    def process_image(self, image: Image.Image, target_size: Tuple[int, int]):
-        tw, th = target_size
-        w, h = image.size
-        scale = max(tw / w, th / h)
-        new_w, new_h = int(w * scale), int(h * scale)
-        image = image.resize((new_w, new_h), resample=Image.BICUBIC)
-        left = (new_w - tw) // 2
-        top = (new_h - th) // 2
-        image = image.crop((left, top, left + tw, top + th))
-        img_tensor = F.to_tensor(image)
-        img_tensor = F.normalize(img_tensor, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-        return img_tensor
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, info):
-        # Normalize the input info format.
-        # `prompt_key_pair` is a (student_key, teacher_key) tuple: student -> p0, teacher -> p1.
-        if isinstance(info, (tuple, list)):
-            if len(info) == 3:
-                idx, target_res, prompt_key_pair = info
-                retry_count = 0
-            elif len(info) == 4:
-                idx, target_res, prompt_key_pair, retry_count = info
-            else:
-                raise ValueError(f"Invalid info length: {len(info)}")
-        else:
-            # Handle corner cases where only an integer index is passed
-            idx = info
-            target_res = self.target_resolutions[0]
-            prompt_key_pair = ("short_en", "detailed_en")  # default (p0, p1)
-            retry_count = 0
-
-        if retry_count > 10:
-            raise RuntimeError(f"Retry limit reached for index {idx}")
-
-        student_key, teacher_key = prompt_key_pair
-
-        item = self.data[idx]
-        try:
-            img_path = get_local_image_path(item, jsonl_path=self.jsonl_path, data_root=self.data_root)
-            with Image.open(img_path) as img:
-                image = to_rgb_safely(img)
-            pixel_values = self.process_image(image, target_res)
-        except Exception as e:
-            bucket_idx = self.target_resolutions.index(target_res)
-            new_idx = random.choice(self.buckets[bucket_idx])
-            return self.__getitem__((new_idx, target_res, prompt_key_pair, retry_count + 1))
-
-        return {
-            "pixel_values": pixel_values,
-            "student_prompt": str(item.get(student_key, "")),   # p0
-            "teacher_prompt": str(item.get(teacher_key, "")),   # p1 = PE(p0)
-            "prompt_pair": f"{student_key}->{teacher_key}",
-        }
+    pass
 
 
 # --- 2. Aspect Ratio Sampler ---
@@ -207,16 +102,7 @@ class AspectBatchSampler(Sampler):
 
 # --- 3. DataLoader ---
 def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples])
-    student_prompts = [example["student_prompt"] for example in examples]   # p0
-    teacher_prompts = [example["teacher_prompt"] for example in examples]   # p1 = PE(p0)
-    prompt_pairs = [example["prompt_pair"] for example in examples]
-    return {
-        "pixel_values": pixel_values,
-        "student_prompts": student_prompts,
-        "teacher_prompts": teacher_prompts,
-        "prompt_pairs": prompt_pairs,
-    }
+    return collate_prompt_pairs(examples)
 
 
 class CustomDataLoader(DataLoader):

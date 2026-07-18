@@ -26,18 +26,29 @@ Difference vs `../z-image-turbo_self-distill-vlm`:
 
 ## Data format
 
-Each `data.jsonl` row should contain a short prompt and an enhanced prompt (any
-of the keys below). `p1` is produced offline by your LLM/MLLM prompt enhancer
-(here the bundled `dataset/style_Millennium` toy set already ships
-`short_*`/`detailed_*` pairs, usable as a smoke test).
+The default training data combines:
 
-- student key (`p0`): `short_en` / `short_zh` / `user_prompt_en` / `user_prompt_zh`
-- teacher key (`p1`): `detailed_en` / `detailed_zh`
-- `local_path_list`: one image path (only used to pick the generation resolution)
-- `h*w` (or `w*h`): used for aspect-ratio bucketing
+- `Flow-Factory-Private/dataset/geneval`: original prompts (`p0`)
+- `Flow-Factory-Private/dataset/geneval_enhanced`: enhanced prompts (`p1`)
 
-`--prompt-key-pairs "short_en:detailed_en,short_zh:detailed_zh,..."` selects one
-`(p0, p1)` pair per batch for length/language variety.
+Build the aligned, self-contained dataset with:
+
+```bash
+python3 build_geneval_pe_dataset.py
+```
+
+This writes:
+
+- `dataset/geneval_pe/train.jsonl` (33,199 rows)
+- `dataset/geneval_pe/test.jsonl` (553 rows)
+
+Each row contains `p0`, `p1`, Geneval metadata, `source_split`, and
+`source_row`. The builder checks row counts, prompt alignment, non-empty
+values, and uniqueness before writing anything.
+
+The loader is text-only: it does not open or transfer target images. Rows
+without `h*w`/`w*h` use `--train-height` and `--train-width` (both default to
+512). Legacy rows with dimensions continue to use aspect-ratio buckets.
 
 ## Training
 
@@ -49,17 +60,28 @@ bash scripts/train_lora_pe.sh
 `--ema-decay 1.0` keeps the teacher frozen at the base model (cleanest:
 distill `base(p1)` → `student(p0)`); set `< 1.0` for an EMA teacher.
 Training runs in 4 steps; inference keeps the standard 8-step Z-Image-Turbo
-pipeline. The samples folder logs, per step:
+pipeline. Validation uses the same per-index noise for p0 and p1 branches.
+The samples folder contains:
 
-- `samples_original.png` — base model on `p0` (the weak starting point)
-- `samples_step_i_student.png` — trained student on `p0` (should approach `img1`)
-- `samples_step_i_teacher.png` — teacher on `p1` (the target)
+- `samples_base_p0.png` — fixed base model on original prompts
+- `samples_base_p1.png` — fixed base model on enhanced prompts
+- `samples_step_i_student_p0.png` — current student on original prompts
+- `samples_step_i_teacher_p1.png` — current teacher on enhanced prompts
+
+The two base grids are generated once before training. Student and teacher
+grids are generated on each configured sampling checkpoint.
 
 ## Inference
 
-Identical to the original Z-Image-Turbo pipeline; just feed the short prompt
-`p0` and load the trained student LoRA (see `../z-image-turbo_self-distill-vlm/README.md`
-for the loading snippet — only the LoRA path changes).
+Identical to the original Z-Image-Turbo pipeline: feed only `p0` and load the
+student adapter from:
+
+```text
+exp_results/<exp-name>/checkpoints/lora_gen_step_<step>/student
+```
+
+Load that directory with `PeftModel.from_pretrained(pipe.transformer, path)`.
+No prompt enhancer is needed at inference time.
 
 ## Acknowledgement
 

@@ -17,21 +17,23 @@ accelerate launch \
     ${PYTHON_SCRIPT} \
     --deepspeed-config  "configs/z2.json" \
     --output-dir        "exp_results/" \
-    --exp-name          "dopsd_pe_teacher_ema1.0_4steptrain_styleMillennium_bsz1_lora_lr1e-4" \
+    --exp-name          "dopsd_pe_geneval_ema1.0_4step_512_lora" \
     --sample-steps      100 \
     --checkpoint-steps  500 \
     --epochs            2001 \
     --max-train-steps   2000 \
     --pretrained_model  "Tongyi-MAI/Z-Image-Turbo" \
     --num-training-steps 4 \
+    --train-height 512 \
+    --train-width 512 \
     --use-lora 2 \
     --lora-rank 64 \
     --lora-alpha 128 \
-    --data-path-train-jsonl "dataset/style_Millennium/data.jsonl" \
-    --data-path-test-jsonl  "dataset/style_Millennium/data.jsonl" \
-    --prompt-key-pairs "short_en:detailed_en,short_zh:detailed_zh,user_prompt_en:detailed_en,user_prompt_zh:detailed_zh" \
-    --student-prompt-key "short_en" \
-    --teacher-prompt-key "detailed_en" \
+    --data-path-train-jsonl "dataset/geneval_pe/train.jsonl" \
+    --data-path-test-jsonl  "dataset/geneval_pe/test.jsonl" \
+    --prompt-key-pairs "p0:p1" \
+    --student-prompt-key "p0" \
+    --teacher-prompt-key "p1" \
     --seed   30 \
     --mixed-precision "bf16" \
     --batch-size 1 \

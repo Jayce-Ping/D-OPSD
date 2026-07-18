@@ -1,17 +1,14 @@
-import hashlib
-
 import torch
 
+from validation_seeds import create_validation_seeds
 
-def create_generator(prompts, base_seed):
-    generators = []
-    for prompt in prompts:
-        hash_digest = hashlib.sha256(prompt.encode()).digest()
-        prompt_hash_int = int.from_bytes(hash_digest[:4], "big")
-        seed = (base_seed + prompt_hash_int) % (2**31)
-        gen = torch.Generator().manual_seed(seed)
-        generators.append(gen)
-    return generators
+
+def create_validation_generators(num_samples: int, base_seed: int):
+    """Create reproducible per-index generators shared across prompt variants."""
+    return [
+        torch.Generator().manual_seed(seed)
+        for seed in create_validation_seeds(num_samples, base_seed)
+    ]
 
 
 def _encode_prompt(

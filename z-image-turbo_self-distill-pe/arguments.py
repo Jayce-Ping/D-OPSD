@@ -1,5 +1,20 @@
 import argparse
 
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive integer, got {value!r}"
+        ) from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive integer, got {value!r}"
+        )
+    return parsed
+
+
 def parse_args():
 
     parser = argparse.ArgumentParser(description="Training")
@@ -26,13 +41,17 @@ def parse_args():
     parser.add_argument("--lora-alpha", type=int, default=64)
     parser.add_argument("--num-training-steps", type=int, default=8, help="number of diffusion steps for training.")
     parser.add_argument("--ema-decay", type=float, default=0.9, help="EMA decay for teacher model.")
+    parser.add_argument("--train-height", type=positive_int, default=512,
+                        help="Training and validation image height for text-only rows.")
+    parser.add_argument("--train-width", type=positive_int, default=512,
+                        help="Training and validation image width for text-only rows.")
 
     #vae
     parser.add_argument("--vae-dtype", type=str, default="fp32", choices=["fp32", "fp16", "bf16"], help="VAE precision.")
 
     # dataset
-    parser.add_argument("--data-path-train-jsonl", type=str, default="../data/x.jsonl", help="Path to the training data jsonl file.")
-    parser.add_argument("--data-path-test-jsonl", type=str, default="../data/x.jsonl", help="Path to the testing data jsonl file.")
+    parser.add_argument("--data-path-train-jsonl", type=str, default="dataset/geneval_pe/train.jsonl", help="Path to the training data jsonl file.")
+    parser.add_argument("--data-path-test-jsonl", type=str, default="dataset/geneval_pe/test.jsonl", help="Path to the testing data jsonl file.")
     parser.add_argument("--batch-size", type=int, default=4, help="local batch size.")
     parser.add_argument("--batch-size-test", type=int, default=1, help="local batch size test.")
 
@@ -42,14 +61,14 @@ def parse_args():
     parser.add_argument(
         "--prompt-key-pairs",
         type=str,
-        default="short_en:detailed_en,short_zh:detailed_zh,user_prompt_en:detailed_en,user_prompt_zh:detailed_zh",
+        default="p0:p1",
         help="Comma-separated `student_key:teacher_key` pairs read from each jsonl row. "
              "student_key -> p0 (short prompt), teacher_key -> p1 (enhanced prompt). "
              "One pair is sampled per batch for length/language variety.",
     )
-    parser.add_argument("--student-prompt-key", type=str, default="short_en",
+    parser.add_argument("--student-prompt-key", type=str, default="p0",
                         help="Validation: prompt key used for the student (p0).")
-    parser.add_argument("--teacher-prompt-key", type=str, default="detailed_en",
+    parser.add_argument("--teacher-prompt-key", type=str, default="p1",
                         help="Validation: prompt key used for the teacher (p1).")
 
     # precision

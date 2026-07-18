@@ -19,12 +19,12 @@ from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 import math
 from torchvision.utils import make_grid
-from dataset import TextImageDataset, AspectBatchSampler, CustomDataLoader, parse_ratios, parse_prompt_key_pairs
+from dataset import PromptPairDataset, AspectBatchSampler, CustomDataLoader, parse_ratios, parse_prompt_key_pairs
 from dataset_validate import TextPromptDataset
 from local_paths import resolve_existing_path
 from PIL import Image
 from arguments import parse_args
-from utils import _encode_prompt, create_generator
+from utils import _encode_prompt, create_validation_generators
 from ema_utils import *
 
 logger = get_logger(__name__)
@@ -301,23 +301,19 @@ def main(args):
     train_jsonl_path = resolve_existing_path(args.data_path_train_jsonl, dataset_root)
     test_jsonl_path = resolve_existing_path(args.data_path_test_jsonl, dataset_root)
 
-    if '1024x1024 ( 1:1 index_0 )' in select_ratio:
-        test_h, test_w = 1024, 1024
-    else:
-        test_ratio = select_ratio[0]
-        test_w = int(test_ratio.split('x')[0])
-        test_h = int(test_ratio.split('x')[1].split(' ')[0])
+    test_h, test_w = args.train_height, args.train_width
 
-    train_dataset = TextImageDataset(
+    train_dataset = PromptPairDataset(
         str(train_jsonl_path),
         target_resolutions=parse_ratios(select_ratio),
+        default_resolution=(args.train_width, args.train_height),
         data_root=dataset_root,
     )
 
     train_sampler = AspectBatchSampler(
         buckets=train_dataset.buckets,
         batch_size=args.batch_size,
-        target_resolutions=parse_ratios(select_ratio),
+        target_resolutions=train_dataset.target_resolutions,
         prompt_key_pairs=prompt_key_pairs,
         num_replicas=accelerator.num_processes,
         rank=accelerator.process_index,
@@ -402,39 +398,47 @@ def main(args):
     test_teacher_prompts = list(test_teacher_prompts)
 
     with torch.no_grad():
-        generator_test = create_generator(test_student_prompts, 2026)
-        # sample multistep images for comparison (base model on the short prompt p0)
         pipeline.vae.to(accelerator.device, dtype=inference_dtype)
-        with accelerator.autocast():
-            with pipeline.transformer.disable_adapter() if args.use_lora > 1 else torch.no_grad():
-                images = pipeline(
-                    prompt=test_student_prompts,
-                    height=test_h,
-                    width=test_w,
-                    num_inference_steps=9  if args.num_training_steps < 10 else 50, # This actually results in 8 DiT forwards when set to 9
-                    guidance_scale=0.0 if args.num_training_steps < 10 else 4.0,
-                    generator=generator_test,
-                    output_type="pt",
-                )[0]
-
-        # resize to 1/2 resolution according to its original size
-        images = torch.nn.functional.interpolate(images, size=(test_h // 2, test_w // 2), mode='bicubic',
-                                                 align_corners=False)
-
-        # Save images locally
-        accelerator.wait_for_everyone()
-        out_samples = accelerator.gather(images.to(torch.float32))
+        base_samples = {}
+        for sample_name, prompts in (
+            ("base_p0", test_student_prompts),
+            ("base_p1", test_teacher_prompts),
+        ):
+            generators = create_validation_generators(len(prompts), 2026)
+            with accelerator.autocast():
+                with pipeline.transformer.disable_adapter():
+                    images = pipeline(
+                        prompt=prompts,
+                        height=test_h,
+                        width=test_w,
+                        num_inference_steps=9 if args.num_training_steps < 10 else 50,
+                        guidance_scale=0.0 if args.num_training_steps < 10 else 4.0,
+                        generator=generators,
+                        output_type="pt",
+                    )[0]
+            images = torch.nn.functional.interpolate(
+                images,
+                size=(test_h // 2, test_w // 2),
+                mode="bicubic",
+                align_corners=False,
+            )
+            accelerator.wait_for_everyone()
+            base_samples[sample_name] = accelerator.gather(
+                images.to(torch.float32)
+            )
 
         pipeline.vae.to(accelerator.device, dtype=vae_dtype)
 
-        # Save as grid images
-        out_samples = Image.fromarray(array2grid(out_samples))
         if accelerator.is_main_process:
             base_dir = os.path.join(args.output_dir, args.exp_name)
             sample_dir = os.path.join(base_dir, "samples")
             os.makedirs(sample_dir, exist_ok=True)
-            out_samples.save(f"{sample_dir}/samples_original.png")
-            logger.info(f"Saved original sample images to {sample_dir}/samples_original.png")
+            for sample_name, samples in base_samples.items():
+                output_path = os.path.join(
+                    sample_dir, f"samples_{sample_name}.png"
+                )
+                Image.fromarray(array2grid(samples)).save(output_path)
+                logger.info(f"Saved fixed base samples to {output_path}")
 
     grad_norm = 0
     for epoch in range(epoch_start + 1, args.epochs):
@@ -446,15 +450,13 @@ def main(args):
             with accelerator.accumulate(gen_model):
 
 
-                images = batch["pixel_values"].to(device=accelerator.device, dtype=vae_dtype)
                 train_dtype = inference_dtype
                 student_prompts = batch["student_prompts"]   # p0 (short prompt)
                 teacher_prompts = batch["teacher_prompts"]   # p1 = PE(p0) (enhanced prompt)
 
-                # NOTE: the target image is only used to define the generation resolution (h, w).
-                # Its content is NOT used as conditioning here (teacher uses p1 text, not the image).
-                bsz = images.shape[0]
-                h, w = images.shape[2], images.shape[3]
+                bsz = len(student_prompts)
+                h = batch["height"]
+                w = batch["width"]
 
 
                 if args.num_training_steps == 4:
@@ -647,6 +649,9 @@ def main(args):
                             # sample multistep images for comparison
                             # student: trained adapter conditioned on the short prompt p0
                             gen_model.set_adapter("student")
+                            student_generators = create_validation_generators(
+                                len(test_student_prompts), 2026
+                            )
                             with accelerator.autocast():
                                 images_s = pipeline(
                                     prompt=test_student_prompts,
@@ -655,7 +660,7 @@ def main(args):
                                     num_inference_steps=9 if args.num_training_steps < 10 else 50,
                                     # This actually results in 8 DiT forwards when set to 9
                                     guidance_scale=0.0 if args.num_training_steps < 10 else 4.0,
-                                    generator=generator_test,
+                                    generator=student_generators,
                                     output_type="pt",
                                 )[0]
 
@@ -664,6 +669,9 @@ def main(args):
 
                             # teacher: (EMA/base) adapter conditioned on the enhanced prompt p1
                             gen_model.set_adapter("teacher")
+                            teacher_generators = create_validation_generators(
+                                len(test_teacher_prompts), 2026
+                            )
                             with accelerator.autocast():
                                 images_t = pipeline(
                                     prompt=test_teacher_prompts,
@@ -673,7 +681,7 @@ def main(args):
                                     # This actually results in 8 DiT forwards when set to 9
                                     guidance_scale=0.0 if args.num_training_steps < 10 else 4.0,
                                     # Guidance should be 0 for the Turbo models
-                                    generator=generator_test,
+                                    generator=teacher_generators,
                                     output_type="pt",
                                 )[0]
                             image_t = torch.nn.functional.interpolate(images_t, size=(test_h // 2, test_w // 2), mode='bicubic', align_corners=False)
@@ -691,8 +699,8 @@ def main(args):
                                 base_dir = os.path.join(args.output_dir, args.exp_name)
                                 sample_dir = os.path.join(base_dir, "samples")
                                 os.makedirs(sample_dir, exist_ok=True)
-                                out_samples.save(f"{sample_dir}/samples_step_{global_step}_student.png")
-                                out_samples_t.save(f"{sample_dir}/samples_step_{global_step}_teacher.png")
+                                out_samples.save(f"{sample_dir}/samples_step_{global_step}_student_p0.png")
+                                out_samples_t.save(f"{sample_dir}/samples_step_{global_step}_teacher_p1.png")
                                 logger.info(f"Saved sample images to {sample_dir}/samples_step_{global_step}.png")
 
                             pipeline.vae.to(accelerator.device, dtype=vae_dtype)
