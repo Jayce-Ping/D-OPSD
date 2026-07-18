@@ -28,6 +28,12 @@ def parse_args():
     parser.add_argument("--logging-dir", type=str, default="logs")
 
     parser.add_argument("--exp-name", type=str, required=True)
+    parser.add_argument("--report-to", type=str, default="none", choices=["none", "wandb"],
+                        help="Experiment tracker to log metrics to. 'wandb' uploads to Weights & Biases.")
+    parser.add_argument("--wandb-project", type=str, default="d-opsd-z-image-pe",
+                        help="wandb project name (used when --report-to wandb).")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="wandb entity/team (optional; defaults to the logged-in user).")
     parser.add_argument("--sample-steps", type=int, default=2000)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--checkpoint-steps", type=int, default=200000)

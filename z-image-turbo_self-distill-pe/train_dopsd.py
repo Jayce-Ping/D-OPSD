@@ -157,6 +157,7 @@ def main(args):
         mixed_precision=args.mixed_precision,
         project_config=accelerator_project_config,
         deepspeed_plugins=deepspeed_plugins,
+        log_with="wandb" if args.report_to == "wandb" else None,
     )
 
     os.makedirs(args.output_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
@@ -174,6 +175,16 @@ def main(args):
 
         logger = create_logger(save_dir)
         logger.info(f"Experiment directory created at {save_dir}")
+
+    if args.report_to == "wandb":
+        init_kwargs = {"wandb": {"name": args.exp_name}}
+        if args.wandb_entity:
+            init_kwargs["wandb"]["entity"] = args.wandb_entity
+        accelerator.init_trackers(
+            project_name=args.wandb_project,
+            config=vars(args),
+            init_kwargs=init_kwargs,
+        )
 
     if torch.backends.mps.is_available():
         accelerator.native_amp = False

@@ -1,7 +1,7 @@
 
 CONFIG_FILE="configs/default.yaml"
 MAIN_PORT=60213
-NUM_PROCS=4
+NUM_PROCS=8
 PYTHON_SCRIPT="train_dopsd.py"
 
 # Prompt-enhance teacher (D-OPSD with c_t = f(p1) instead of f_mm(prompt, target_image)).
@@ -44,3 +44,5 @@ accelerate launch \
     --enable-gc \
     --vae-dtype "bf16" \
     --ema-decay 1.0 \
+    --report-to "wandb" \
+    --wandb-project "d-opsd-z-image-pe" \
