@@ -561,6 +561,9 @@ def main(args):
     test_student_prompts = list(test_student_prompts)
     test_teacher_prompts = list(test_teacher_prompts)
 
+    # Evaluate at two guidance scales: 1.0 (no CFG) and 4.0 (with CFG).
+    eval_guidance_scales = [1.0, 4.0]
+
     with torch.no_grad():
         pipeline.vae.to(accelerator.device, dtype=inference_dtype)
         base_samples = {}
@@ -568,28 +571,30 @@ def main(args):
             ("base_p0", test_student_prompts),
             ("base_p1", test_teacher_prompts),
         ):
-            generators = create_validation_generators(len(prompts), 2026)
-            with accelerator.autocast():
-                with pipeline.transformer.disable_adapter():
-                    images = pipeline(
-                        prompt=prompts,
-                        height=test_h,
-                        width=test_w,
-                        num_inference_steps=args.num_training_steps,
-                        guidance_scale=1.0,
-                        generator=generators,
-                        output_type="pt",
-                    )[0]
-            images = torch.nn.functional.interpolate(
-                images,
-                size=(test_h // 2, test_w // 2),
-                mode="bicubic",
-                align_corners=False,
-            )
-            accelerator.wait_for_everyone()
-            base_samples[sample_name] = accelerator.gather(
-                images.to(torch.float32)
-            )
+            for guidance_scale in eval_guidance_scales:
+                # Re-seed per scale so gs1 and gs4 share identical initial noise.
+                generators = create_validation_generators(len(prompts), 2026)
+                with accelerator.autocast():
+                    with pipeline.transformer.disable_adapter():
+                        images = pipeline(
+                            prompt=prompts,
+                            height=test_h,
+                            width=test_w,
+                            num_inference_steps=args.num_training_steps,
+                            guidance_scale=guidance_scale,
+                            generator=generators,
+                            output_type="pt",
+                        )[0]
+                images = torch.nn.functional.interpolate(
+                    images,
+                    size=(test_h // 2, test_w // 2),
+                    mode="bicubic",
+                    align_corners=False,
+                )
+                accelerator.wait_for_everyone()
+                base_samples[f"{sample_name}_gs{guidance_scale:g}"] = accelerator.gather(
+                    images.to(torch.float32)
+                )
 
         pipeline.vae.to(accelerator.device, dtype=vae_dtype)
 
@@ -815,58 +820,67 @@ def main(args):
                                 max_size=(2048, 2048),
                             )
 
-                            # sample multistep images for comparison
-                            # student: trained adapter conditioned on the short prompt p0
-                            gen_model.set_adapter("student")
-                            student_generators = create_validation_generators(
-                                len(test_student_prompts), 2026
-                            )
-                            with accelerator.autocast():
-                                images_s = pipeline(
-                                    prompt=test_student_prompts,
-                                    height=test_h,
-                                    width=test_w,
-                                    num_inference_steps=args.num_training_steps,
-                                    guidance_scale=1.0,
-                                    generator=student_generators,
-                                    output_type="pt",
-                                )[0]
+                            # sample multistep images for comparison, once per guidance scale
+                            # (gs=1.0 -> no CFG, gs=4.0 -> with CFG)
+                            student_teacher_grids = {}
+                            for guidance_scale in eval_guidance_scales:
+                                gs_suffix = f"gs{guidance_scale:g}"
 
-                            images_s = torch.nn.functional.interpolate(images_s, size=(test_h // 2, test_w // 2),
-                                                                     mode='bicubic', align_corners=False)
+                                # student: trained adapter conditioned on the short prompt p0
+                                gen_model.set_adapter("student")
+                                student_generators = create_validation_generators(
+                                    len(test_student_prompts), 2026
+                                )
+                                with accelerator.autocast():
+                                    images_s = pipeline(
+                                        prompt=test_student_prompts,
+                                        height=test_h,
+                                        width=test_w,
+                                        num_inference_steps=args.num_training_steps,
+                                        guidance_scale=guidance_scale,
+                                        generator=student_generators,
+                                        output_type="pt",
+                                    )[0]
 
-                            # teacher: (EMA/base) adapter conditioned on the enhanced prompt p1
-                            gen_model.set_adapter("teacher")
-                            teacher_generators = create_validation_generators(
-                                len(test_teacher_prompts), 2026
-                            )
-                            with accelerator.autocast():
-                                images_t = pipeline(
-                                    prompt=test_teacher_prompts,
-                                    height=test_h,
-                                    width=test_w,
-                                    num_inference_steps=args.num_training_steps,
-                                    guidance_scale=1.0,
-                                    generator=teacher_generators,
-                                    output_type="pt",
-                                )[0]
-                            image_t = torch.nn.functional.interpolate(images_t, size=(test_h // 2, test_w // 2), mode='bicubic', align_corners=False)
+                                images_s = torch.nn.functional.interpolate(images_s, size=(test_h // 2, test_w // 2),
+                                                                         mode='bicubic', align_corners=False)
 
-                            # Save images locally
-                            accelerator.wait_for_everyone()
-                            out_samples = accelerator.gather(images_s.to(torch.float32))
-                            out_samples_t = accelerator.gather(image_t.to(torch.float32))
+                                # teacher: (EMA/base) adapter conditioned on the enhanced prompt p1
+                                gen_model.set_adapter("teacher")
+                                teacher_generators = create_validation_generators(
+                                    len(test_teacher_prompts), 2026
+                                )
+                                with accelerator.autocast():
+                                    images_t = pipeline(
+                                        prompt=test_teacher_prompts,
+                                        height=test_h,
+                                        width=test_w,
+                                        num_inference_steps=args.num_training_steps,
+                                        guidance_scale=guidance_scale,
+                                        generator=teacher_generators,
+                                        output_type="pt",
+                                    )[0]
+                                images_t = torch.nn.functional.interpolate(images_t, size=(test_h // 2, test_w // 2), mode='bicubic', align_corners=False)
 
-                            # Save as grid images
-                            out_samples = Image.fromarray(array2grid(out_samples))
-                            out_samples_t = Image.fromarray(array2grid(out_samples_t))
+                                # Save images locally
+                                accelerator.wait_for_everyone()
+                                out_samples = accelerator.gather(images_s.to(torch.float32))
+                                out_samples_t = accelerator.gather(images_t.to(torch.float32))
+
+                                # Save as grid images
+                                student_teacher_grids[gs_suffix] = (
+                                    Image.fromarray(array2grid(out_samples)),
+                                    Image.fromarray(array2grid(out_samples_t)),
+                                )
+
                             if accelerator.is_main_process:
 
                                 base_dir = os.path.join(args.output_dir, args.exp_name)
                                 sample_dir = os.path.join(base_dir, "samples")
                                 os.makedirs(sample_dir, exist_ok=True)
-                                out_samples.save(f"{sample_dir}/samples_step_{global_step}_student_p0.png")
-                                out_samples_t.save(f"{sample_dir}/samples_step_{global_step}_teacher_p1.png")
+                                for gs_suffix, (grid_s, grid_t) in student_teacher_grids.items():
+                                    grid_s.save(f"{sample_dir}/samples_step_{global_step}_student_p0_{gs_suffix}.png")
+                                    grid_t.save(f"{sample_dir}/samples_step_{global_step}_teacher_p1_{gs_suffix}.png")
                                 logger.info(f"Saved sample images to {sample_dir}/samples_step_{global_step}.png")
 
                             pipeline.vae.to(accelerator.device, dtype=vae_dtype)

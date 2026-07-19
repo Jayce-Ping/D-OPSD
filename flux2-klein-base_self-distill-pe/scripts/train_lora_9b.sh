@@ -1,6 +1,6 @@
 CONFIG_FILE="configs/default.yaml"
 MAIN_PORT=60214
-NUM_PROCS=4
+NUM_PROCS=8
 PYTHON_SCRIPT="train_dopsd.py"
 
 # Prompt-enhance teacher on FLUX.2-Klein base (D-OPSD with c_t = f(p1) instead of the edit branch).
@@ -14,7 +14,7 @@ accelerate launch \
     --num_processes     ${NUM_PROCS} \
     ${PYTHON_SCRIPT} \
     --deepspeed-config  "configs/z2.json" \
-    --output-dir     "exp_results/" \
+    --output-dir     "/apdcephfs_fsgm3/share_305110755/hunyuan/bowenping/d_opsd" \
     --exp-name     "dopsd_pe_teacher_ema1.0_40step_9b_geneval_bsz1_lora_lr2e-5" \
     --sample-steps      100 \
     --checkpoint-steps  500 \
@@ -34,7 +34,7 @@ accelerate launch \
     --train-width 512 \
     --seed   30 \
     --mixed-precision "bf16" \
-    --batch-size 1 \
+    --batch-size 4 \
     --batch-size-test 1 \
     --gradient-accumulation-steps 1 \
     --learning-rate-gen 2e-5 \
